@@ -236,10 +236,4 @@ By completing this enhanced MVP, you demonstrate:
 - [ ] Webhook integrations
 - [ ] Advanced analytics dashboard
 
-## 📄 License
 
-This project is open source and available for educational purposes.
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
