@@ -21,6 +21,14 @@ A comprehensive Retrieval-Augmented Generation (RAG) system that allows users to
   - Ollama (local models like Llama2)
   - Hugging Face (local transformers models)
 
+### Performance & Reliability (LATEST!)
+- ⚡ **Detailed Progress Tracking**: See exactly what's happening at each stage (upload → extraction → embedding)
+- 🎯 **Smart Error Handling**: Comprehensive error messages with step-by-step troubleshooting
+- ✅ **Input Validation**: Validates PDFs, questions, and responses to prevent silent failures
+- 🔄 **Timeout Management**: Clear feedback when processing takes longer than expected
+- 💡 **Helpful Suggestions**: Automatic recommendations when issues occur (e.g., switch to Ollama if quota exceeded)
+- 📊 **Processing Statistics**: See word count, character count, and processing status in real-time
+
 ## 🚀 Setup Instructions
 
 ### 1. Install Dependencies

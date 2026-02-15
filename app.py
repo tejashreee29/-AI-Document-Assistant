@@ -258,71 +258,186 @@ def initialize_rag_pipeline(model_type: str = None, model_name: str = None):
 def process_uploaded_documents(pdf_files, user_id: str = None):
     """Process uploaded PDF files and create vector store."""
     if not pdf_files:
+        st.error("⚠️ No files provided. Please upload at least one PDF file.")
         return False
     
     # Validate all files are PDFs
+    invalid_files = []
     for file in pdf_files:
         if not validate_pdf_file(file):
-            st.error(f"❌ {file.name} is not a valid PDF file.")
-            return False
+            invalid_files.append(file.name)
     
-    try:
-        # Upload files to cloud storage
-        uploaded_paths = []
-        for file in pdf_files:
-            file_bytes = file.read()
-            file.seek(0)
-            storage_path = st.session_state.cloud_storage.upload_file(
-                file_bytes,
-                file.name,
-                user_id=user_id
-            )
-            uploaded_paths.append(storage_path)
+    if invalid_files:
+        st.error(f"❌ Invalid files detected: {', '.join(invalid_files)}. Only PDF files are supported.")
+        return False
+    
+    # Create a progress container
+    progress_container = st.container()
+    
+    with progress_container:
+        # Step 1: Upload files
+        st.info(f"📤 Uploading {len(pdf_files)} file(s)...")
+        progress_bar = st.progress(0)
+        status_text = st.empty()
         
-        with st.spinner("📄 Extracting text from PDFs..."):
-            # Extract text from all PDFs
-            combined_text = extract_text_from_multiple_pdfs(pdf_files)
-            
-            if not combined_text or not combined_text.strip():
-                st.error("❌ No text could be extracted from the PDFs.")
-                return False
-            
-            # Preprocess text
-            processed_text = preprocess_text(combined_text)
-            
-        with st.spinner("🔄 Processing documents and creating embeddings..."):
-            # Initialize RAG pipeline if not already done
-            if st.session_state.rag_pipeline is None:
-                st.session_state.rag_pipeline = initialize_rag_pipeline()
-                if st.session_state.rag_pipeline is None:
+        try:
+            # Upload files to cloud storage
+            uploaded_paths = []
+            for idx, file in enumerate(pdf_files):
+                status_text.text(f"Uploading {file.name}...")
+                progress_bar.progress((idx + 1) / (len(pdf_files) * 3))
+                
+                try:
+                    file_bytes = file.read()
+                    file.seek(0)
+                    storage_path = st.session_state.cloud_storage.upload_file(
+                        file_bytes,
+                        file.name,
+                        user_id=user_id
+                    )
+                    uploaded_paths.append(storage_path)
+                except Exception as upload_error:
+                    st.error(f"❌ Failed to upload {file.name}: {str(upload_error)}")
                     return False
             
-            # Load documents into RAG pipeline
-            st.session_state.rag_pipeline.load_documents(processed_text)
-            st.session_state.documents_processed = True
+            status_text.text("✅ Upload complete!")
             
-        st.success(f"✅ Successfully processed {len(pdf_files)} document(s)!")
-        return True
-        
-    except Exception as e:
-        error_msg = str(e)
-        # Check for quota exceeded error (only show if using OpenAI)
-        if st.session_state.model_type == "openai" and ("quota" in error_msg.lower() or "429" in error_msg or "insufficient_quota" in error_msg):
-            st.error("""
-            ❌ **API Quota Exceeded**
+            # Step 2: Extract text from PDFs
+            st.info("📄 Extracting text from PDFs...")
+            status_text.text("Extracting text from documents...")
+            progress_bar.progress(len(pdf_files) / (len(pdf_files) * 3))
             
-            Your OpenAI API quota has been exceeded. Here are your options:
+            try:
+                combined_text = extract_text_from_multiple_pdfs(pdf_files)
+                
+                if not combined_text or not combined_text.strip():
+                    st.error(
+                        "❌ **No text could be extracted from the PDFs.**\n\n"
+                        "This usually means:\n"
+                        "- Your PDFs contain only images/scans (not searchable text)\n"
+                        "- The PDFs are corrupted or password-protected\n"
+                        "- The PDFs are empty\n\n"
+                        "**Solution:** Please upload PDFs with extractable text content."
+                    )
+                    return False
+                
+                # Show extraction stats
+                word_count = len(combined_text.split())
+                char_count = len(combined_text)
+                status_text.text(f"✅ Extracted {word_count:,} words ({char_count:,} characters)")
+                
+                # Preprocess text
+                processed_text = preprocess_text(combined_text)
+                
+            except Exception as extract_error:
+                st.error(
+                    f"❌ **Text extraction failed:** {str(extract_error)}\n\n"
+                    "Please check:\n"
+                    "- PDFs are not corrupted\n"
+                    "- PDFs contain readable text (not just scanned images)\n"
+                    "- PDFs are not password-protected"
+                )
+                return False
             
-            1. **Check Billing**: Visit https://platform.openai.com/account/billing
-            2. **Add Payment Method**: Add a payment method to increase your quota
-            3. **Use Local Models**: Switch to Ollama (free, local) in Model Settings
-            4. **Wait**: Free tier quotas reset monthly
+            # Step 3: Create embeddings and vector store
+            st.info("🔄 Creating embeddings and vector store...")
+            status_text.text("Processing documents and creating embeddings (this may take a moment)...")
+            progress_bar.progress((len(pdf_files) * 2) / (len(pdf_files) * 3))
             
-            **Quick Fix**: Switch to Ollama model (free, runs locally) in the sidebar!
-            """)
-        else:
-            st.error(f"❌ Error processing documents: {error_msg}")
-        return False
+            try:
+                # Initialize RAG pipeline if not already done
+                if st.session_state.rag_pipeline is None:
+                    status_text.text("Initializing AI model...")
+                    st.session_state.rag_pipeline = initialize_rag_pipeline()
+                    
+                    if st.session_state.rag_pipeline is None:
+                        st.error(
+                            "❌ **Failed to initialize AI model.**\n\n"
+                            "Please check:\n"
+                            "- Your API key is set correctly in the .env file\n"
+                            "- You have selected a valid model in the sidebar\n"
+                            "- For Ollama: ensure the server is running (`ollama serve`)\n"
+                            "- For OpenAI: check your API quota and billing"
+                        )
+                        return False
+                
+                # Load documents into RAG pipeline
+                status_text.text("Creating vector embeddings...")
+                st.session_state.rag_pipeline.load_documents(processed_text)
+                st.session_state.documents_processed = True
+                
+                # Complete!
+                progress_bar.progress(1.0)
+                status_text.text("✅ Processing complete!")
+                
+                # Show success message with stats
+                st.success(
+                    f"✅ **Successfully processed {len(pdf_files)} document(s)!**\n\n"
+                    f"- **Words extracted:** {word_count:,}\n"
+                    f"- **Ready for questions!**"
+                )
+                
+                return True
+                
+            except Exception as embedding_error:
+                error_msg = str(embedding_error)
+                
+                # Check for specific errors
+                if st.session_state.model_type == "openai" and (
+                    "quota" in error_msg.lower() or 
+                    "429" in error_msg or 
+                    "insufficient_quota" in error_msg
+                ):
+                    st.error(
+                        "❌ **OpenAI API Quota Exceeded**\n\n"
+                        "Your OpenAI API quota has been exceeded. Options:\n\n"
+                        "1. **Check Billing:** Visit https://platform.openai.com/account/billing\n"
+                        "2. **Add Payment Method:** Add a payment method to increase quota\n"
+                        "3. **Use Ollama (Free!):** Switch to Ollama in Model Settings\n"
+                        "4. **Wait:** Free tier quotas reset monthly\n\n"
+                        "**Quick Fix:** Switch to Ollama model (free, runs locally) in the sidebar!"
+                    )
+                elif "timeout" in error_msg.lower() or "timed out" in error_msg.lower():
+                    st.error(
+                        "❌ **Processing Timeout**\n\n"
+                        "The embedding process took too long. This can happen with:\n"
+                        "- Very large PDF files\n"
+                        "- Slow internet connection (for cloud models)\n"
+                        "- Server overload\n\n"
+                        "**Try:**\n"
+                        "1. Upload smaller PDF files (split large PDFs)\n"
+                        "2. Use Ollama for local processing (no internet needed)\n"
+                        "3. Try again in a few moments"
+                    )
+                elif "memory" in error_msg.lower() or "oom" in error_msg.lower():
+                    st.error(
+                        "❌ **Out of Memory**\n\n"
+                        "Your system ran out of memory processing these documents.\n\n"
+                        "**Try:**\n"
+                        "1. Upload fewer/smaller PDF files\n"
+                        "2. Close other applications\n"
+                        "3. Use a cloud-based model (OpenAI) instead of local models"
+                    )
+                else:
+                    st.error(
+                        f"❌ **Error creating embeddings:** {error_msg}\n\n"
+                        "**Troubleshooting:**\n"
+                        "1. Try reprocessing the documents\n"
+                        "2. Check your model settings in the sidebar\n"
+                        "3. Try a different model (OpenAI, Ollama, or HuggingFace)\n"
+                        "4. Restart the application"
+                    )
+                
+                return False
+                
+        except Exception as e:
+            st.error(f"❌ **Unexpected error:** {str(e)}\n\nPlease try again or contact support.")
+            return False
+        finally:
+            # Clean up progress indicators
+            progress_bar.empty()
+            status_text.empty()
+
 
 
 def create_new_session():
@@ -639,6 +754,11 @@ def main():
     
     # Chat input
     if prompt := st.chat_input("Ask a question about your documents..."):
+        # Validate question
+        if not prompt.strip():
+            st.warning("⚠️ Please enter a valid question.")
+            return
+        
         # Add user message to chat
         user_message = {"role": "user", "content": prompt}
         st.session_state.messages.append(user_message)
@@ -656,94 +776,222 @@ def main():
         
         # Generate response
         with st.chat_message("assistant"):
-            with st.spinner("🤔 Thinking..."):
-                try:
-                    # Get chat history for context
-                    chat_history = get_chat_history()
-                    
-                    # Query RAG pipeline with memory
-                    answer, source_docs = st.session_state.rag_pipeline.query(
-                        prompt,
-                        k=4,
-                        chat_history=chat_history
+            # Create a status container for detailed progress
+            status_container = st.empty()
+            
+            try:
+                # Step 1: Retrieve relevant documents
+                status_container.info("🔍 Searching documents for relevant information...")
+                
+                # Get chat history for context
+                chat_history = get_chat_history()
+                
+                # Step 2: Generate answer
+                status_container.info("🤔 Generating answer (this may take 10-30 seconds)...")
+                
+                # Query RAG pipeline with memory
+                answer, source_docs = st.session_state.rag_pipeline.query(
+                    prompt,
+                    k=4,
+                    chat_history=chat_history,
+                    timeout=120  # 2 minute timeout
+                )
+                
+                # Clear status
+                status_container.empty()
+                
+                # Display response
+                st.markdown(answer)
+                
+                # Store source documents
+                message_idx = len(st.session_state.messages)
+                st.session_state.source_documents[message_idx] = [
+                    doc.page_content if hasattr(doc, 'page_content') else str(doc)
+                    for doc in source_docs
+                ]
+                
+                # Display sources if enabled
+                if st.session_state.show_sources and source_docs:
+                    with st.expander("📄 View Sources", expanded=False):
+                        for i, source in enumerate(source_docs, 1):
+                            source_text = source.page_content if hasattr(source, 'page_content') else str(source)
+                            st.markdown(f"**Source {i}:**")
+                            st.text(source_text[:500] + "..." if len(source_text) > 500 else source_text)
+                            st.divider()
+                
+                # Save assistant message
+                assistant_message = {"role": "assistant", "content": answer}
+                st.session_state.messages.append(assistant_message)
+                
+                # Save to database
+                st.session_state.db.save_message(
+                    st.session_state.current_session_id,
+                    "assistant",
+                    answer
+                )
+                
+            except ValueError as ve:
+                # Handle validation errors (empty questions, no relevant docs, etc.)
+                status_container.empty()
+                error_msg = str(ve)
+                
+                if "No relevant information" in error_msg:
+                    st.warning(
+                        f"⚠️ **{error_msg}**\n\n"
+                        "**Suggestions:**\n"
+                        "- Try rephrasing your question\n"
+                        "- Use keywords from your documents\n"
+                        "- Ask more specific questions\n"
+                        "- Ensure your question relates to the uploaded documents"
+                    )
+                elif "empty" in error_msg.lower():
+                    st.error(
+                        f"❌ **{error_msg}**\n\n"
+                        "This usually means your PDFs don't contain extractable text. "
+                        "Please upload PDFs with readable text content."
+                    )
+                else:
+                    st.warning(f"⚠️ {error_msg}")
+                
+                # Don't save validation errors to chat history
+                
+            except Exception as e:
+                status_container.empty()
+                error_msg = str(e)
+                
+                # Comprehensive error handling with helpful messages
+                if "quota" in error_msg.lower() or "429" in error_msg or "API quota" in error_msg:
+                    st.error(
+                        "❌ **OpenAI API Quota Exceeded**\n\n"
+                        "Your OpenAI API quota has been exceeded.\n\n"
+                        "**Options:**\n"
+                        "1. **Check Billing:** https://platform.openai.com/account/billing\n"
+                        "2. **Add Payment Method:** Increase your quota\n"
+                        "3. **Use Ollama (Free!):** Switch to Ollama in Model Settings\n"
+                        "4. **Wait:** Free tier quotas reset monthly\n\n"
+                        "**Quick Fix:** Switch to Ollama model (free, local) in the sidebar!"
                     )
                     
-                    # Display response
-                    st.markdown(answer)
-                    
-                    # Store source documents
-                    message_idx = len(st.session_state.messages)
-                    st.session_state.source_documents[message_idx] = [
-                        doc.page_content if hasattr(doc, 'page_content') else str(doc)
-                        for doc in source_docs
-                    ]
-                    
-                    # Display sources if enabled
-                    if st.session_state.show_sources and source_docs:
-                        with st.expander("📄 View Sources", expanded=False):
-                            for i, source in enumerate(source_docs, 1):
-                                source_text = source.page_content if hasattr(source, 'page_content') else str(source)
-                                st.markdown(f"**Source {i}:**")
-                                st.text(source_text[:500] + "..." if len(source_text) > 500 else source_text)
-                                st.divider()
-                    
-                    # Save assistant message
-                    assistant_message = {"role": "assistant", "content": answer}
-                    st.session_state.messages.append(assistant_message)
-                    
-                    # Save to database
-                    st.session_state.db.save_message(
-                        st.session_state.current_session_id,
-                        "assistant",
-                        answer
+                elif "Cannot connect to Ollama" in error_msg or "connection" in error_msg.lower():
+                    st.error(
+                        "❌ **Ollama Connection Error**\n\n"
+                        "Cannot connect to Ollama server.\n\n"
+                        "**Steps to fix:**\n"
+                        "1. Open Terminal\n"
+                        "2. Run: `ollama serve`\n"
+                        "3. In another terminal, run: `ollama pull llama2`\n"
+                        "4. Wait for \"Ollama is running\" message\n"
+                        "5. Refresh this page and try again\n\n"
+                        "**Check:** Make sure Ollama is installed: `ollama --version`"
                     )
                     
-                except Exception as e:
-                    error_msg = str(e)
-                    # Check for quota exceeded error (only show if using OpenAI)
-                    if st.session_state.model_type == "openai" and ("quota" in error_msg.lower() or "429" in error_msg or "insufficient_quota" in error_msg):
-                        st.error("""
-                        ❌ **API Quota Exceeded**
-                        
-                        Your OpenAI API quota has been exceeded. Here are your options:
-                        
-                        1. **Check Billing**: Visit https://platform.openai.com/account/billing
-                        2. **Add Payment Method**: Add a payment method to increase your quota
-                        3. **Use Local Models**: Switch to Ollama (free, local) in Model Settings
-                        4. **Wait**: Free tier quotas reset monthly
-                        
-                        **Quick Fix**: Switch to Ollama model (free, runs locally) in the sidebar!
-                        """)
-                    # Check for Ollama connection errors
-                    elif st.session_state.model_type == "ollama" and ("connection refused" in error_msg.lower() or "errno 61" in error_msg.lower() or "connection" in error_msg.lower()):
-                        st.error("""
-                        ❌ **Ollama Connection Error**
-                        
-                        Cannot connect to Ollama server. Please make sure Ollama is running:
-                        
-                        1. **Start Ollama**: Open Terminal and run: `ollama serve`
-                        2. **Check Installation**: Make sure Ollama is installed: `ollama --version`
-                        3. **Verify URL**: Check if Ollama is running at: http://localhost:11434
-                        4. **Pull Model**: Make sure your model is available: `ollama pull llama2`
-                        
-                        **Quick Fix**: 
-                        - Open Terminal
-                        - Run: `ollama serve`
-                        - Wait for "Ollama is running" message
-                        - Refresh this page and try again
-                        """)
+                elif "timeout" in error_msg.lower() or "timed out" in error_msg.lower():
+                    st.error(
+                        "❌ **Request Timeout**\n\n"
+                        "The AI model took too long to respond.\n\n"
+                        "**This can happen when:**\n"
+                        "- Your question is very complex\n"
+                        "- Your documents are very large\n"
+                        "- The model server is slow/overloaded\n"
+                        "- Internet connection is slow (for cloud models)\n\n"
+                        "**Try:**\n"
+                        "1. Ask a simpler, more specific question\n"
+                        "2. Upload smaller documents\n"
+                        "3. Switch to a faster model (e.g., gpt-3.5-turbo)\n"
+                        "4. Try again in a moment"
+                    )
+                    
+                elif "Invalid" in error_msg and "API key" in error_msg:
+                    st.error(
+                        "❌ **Invalid API Key**\n\n"
+                        "Your OpenAI API key is invalid or not set correctly.\n\n"
+                        "**Steps to fix:**\n"
+                        "1. Check your `.env` file in the project root\n"
+                        "2. Ensure it contains: `OPENAI_API_KEY=your_actual_key`\n"
+                        "3. Get your key from: https://platform.openai.com/api-keys\n"
+                        "4. Restart the application\n\n"
+                        "**Alternative:** Switch to Ollama (free, no API key needed)"
+                    )
+                    
+                elif "rate limit" in error_msg.lower():
+                    st.warning(
+                        "⚠️ **Rate Limit Exceeded**\n\n"
+                        "You're making requests too quickly.\n\n"
+                        "**Please:**\n"
+                        "- Wait 10-20 seconds before trying again\n"
+                        "- Consider using Ollama (no rate limits)\n"
+                        "- Upgrade your OpenAI plan for higher limits"
+                    )
+                    
+                elif "model" in error_msg.lower() and "not found" in error_msg.lower():
+                    model_name = st.session_state.model_name
+                    if st.session_state.model_type == "ollama":
+                        st.error(
+                            f"❌ **Ollama Model Not Found**\n\n"
+                            f"The model '{model_name}' is not available.\n\n"
+                            f"**To install:**\n"
+                            f"1. Open Terminal\n"
+                            f"2. Run: `ollama pull {model_name}`\n"
+                            f"3. Wait for download to complete\n"
+                            f"4. Try your question again\n\n"
+                            f"**Popular models:** llama2, mistral, codellama"
+                        )
                     else:
-                        st.error(f"❌ Error generating response: {error_msg}")
-                    
-                    # Save error message
-                    error_message = {"role": "assistant", "content": error_msg}
-                    st.session_state.messages.append(error_message)
-                    
-                    st.session_state.db.save_message(
-                        st.session_state.current_session_id,
-                        "assistant",
-                        error_msg
+                        st.error(
+                            f"❌ **Model Not Found**\n\n"
+                            f"The model '{model_name}' is not available.\n\n"
+                            f"**Please:**\n"
+                            f"- Check the model name in the sidebar\n"
+                            f"- Select a different model\n"
+                            f"- Verify the model exists for your provider"
+                        )
+                        
+                elif "out of memory" in error_msg.lower() or "oom" in error_msg.lower():
+                    st.error(
+                        "❌ **Out of Memory**\n\n"
+                        "Your system ran out of memory.\n\n"
+                        "**Try:**\n"
+                        "1. Close other applications\n"
+                        "2. Upload smaller documents\n"
+                        "3. Use a cloud model (OpenAI) instead of local\n"
+                        "4. Restart the application"
                     )
+                    
+                elif "No documents loaded" in error_msg:
+                    st.error(
+                        "❌ **No Documents Loaded**\n\n"
+                        "Please upload and process PDF documents first.\n\n"
+                        "**Steps:**\n"
+                        "1. Click 'Browse files' in the sidebar\n"
+                        "2. Select your PDF files\n"
+                        "3. Click 'Process Documents'\n"
+                        "4. Wait for processing to complete\n"
+                        "5. Then ask your question"
+                    )
+                    
+                else:
+                    # Generic error with troubleshooting
+                    st.error(
+                        f"❌ **Error:** {error_msg}\n\n"
+                        "**Troubleshooting:**\n"
+                        "1. Try asking your question again\n"
+                        "2. Rephrase your question\n"
+                        "3. Check your model settings in the sidebar\n"
+                        "4. Try a different model\n"
+                        "5. Restart the application if issues persist\n\n"
+                        "**Need help?** Check the model status in the sidebar."
+                    )
+                
+                # Save error to chat history for context
+                error_summary = f"Error: {error_msg[:200]}"  # Truncate long errors
+                error_message = {"role": "assistant", "content": error_summary}
+                st.session_state.messages.append(error_message)
+                
+                st.session_state.db.save_message(
+                    st.session_state.current_session_id,
+                    "assistant",
+                    error_summary
+                )
 
 
 if __name__ == "__main__":

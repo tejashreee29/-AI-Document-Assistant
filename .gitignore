@@ -1,2 +1,35 @@
+# Environment variables
 .env
-.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environment
+venv/
+env/
+ENV/
+
+# Database files (user data - don't commit)
+*.db
+chat_history.db
+users.db
+
+# Uploads folder (user files - don't commit)
+uploads/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/
